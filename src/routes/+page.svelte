@@ -121,8 +121,8 @@
 
     allResponseNodes = graphData.graph._nodes.filter(n => n.type === 'Chat/回复' && n._responseText);
 
-    const sel = graphData.canvas.selected_nodes || {};
-    const selected = Object.values(sel).filter(n => n.type === 'Chat/回复' && n._responseText);
+    // 直接遍历所有节点检查 is_selected 属性
+    const selected = allResponseNodes.filter(n => n.is_selected);
 
     if (selected.length >= 2) {
       pickedNodes = selected;
