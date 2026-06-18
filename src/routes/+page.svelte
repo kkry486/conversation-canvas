@@ -9,10 +9,11 @@
   let searchQuery = $state('');
   let searchResults = $state([]);
   let searchIndex = $state(-1);
-  let showPicker = $state(false);    // 选择弹窗
-  let showCompare = $state(false);   // 对比弹窗
-  let pickedNodes = $state([]);      // 已勾选的节点
-  let allResponseNodes = $state([]); // 所有回复节点
+  let showPicker = $state(false);
+  let showCompare = $state(false);
+  let pickedNodes = $state([]);
+  let allResponseNodes = $state([]);
+  let selectedRespNodes = new Set(); // 画布上当前选中的回复节点
 
   onMount(async () => {
     if (!window.LiteGraph) {
@@ -34,6 +35,14 @@
 
     graphData.graph.onNodeAdded = (node) => {
       if (node.type === 'Chat/输入') bindSend(node);
+    };
+
+    // 跟踪选中的回复节点
+    graphData.canvas.onNodeSelected = (node) => {
+      if (node.type === 'Chat/回复') selectedRespNodes.add(node);
+    };
+    graphData.canvas.onNodeDeselected = (node) => {
+      selectedRespNodes.delete(node);
     };
 
     return () => { if (graphData) graphData.graph.stop(); };
@@ -111,19 +120,30 @@
   let canvasElement = $state(null);
   $effect(() => { canvasElement = canvasEl; });
 
-  // 打开对比选择器
-  function openPicker() {
+  // 对比分支按钮点击
+  function onCompareClick() {
     if (!graphData) return;
     allResponseNodes = graphData.graph._nodes.filter(n => n.type === 'Chat/回复' && n._responseText);
-    pickedNodes = [];
-    showPicker = true;
+
+    // 过滤出当前选中的回复节点
+    const selected = allResponseNodes.filter(n => selectedRespNodes.has(n));
+
+    if (selected.length >= 2) {
+      // 选中 2+ 个：直接对比
+      pickedNodes = selected;
+      showCompare = true;
+    } else {
+      // 选中 0~1 个：弹窗选择，已选中的预勾选
+      pickedNodes = selected.length === 1 ? [selected[0]] : [];
+      showPicker = true;
+    }
   }
 
   function togglePick(node) {
     const idx = pickedNodes.indexOf(node);
     if (idx >= 0) pickedNodes.splice(idx, 1);
     else pickedNodes.push(node);
-    pickedNodes = pickedNodes; // 触发响应式
+    pickedNodes = pickedNodes;
   }
 
   function startCompare() {
@@ -185,7 +205,7 @@
     </div>
 
     <div class="toolbar-right">
-      <button class="compare-btn" onclick={openPicker}>⚡ 对比分支</button>
+      <button class="compare-btn" onclick={onCompareClick}>⚡ 对比分支</button>
       <span class="hint">双击空白处搜索节点 · 右键打开菜单</span>
     </div>
   </header>
