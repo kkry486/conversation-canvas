@@ -1,0 +1,11 @@
+{
+  "identifier": "main",
+  "description": "对话画布的权限配置",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    "dialog:default",
+    "fs:allow-write-text-file"
+  ]
+}

@@ -1,11 +1,12 @@
 <script>
   import { onMount } from 'svelte';
-  import { initCanvas, createResponseAndSend, createNextPromptNode, exportGraph, importGraph } from '$lib/canvas/init.js';
+  import { initCanvas, createResponseAndSend, createAgentResponse, createNextPromptNode, exportGraph, importGraph } from '$lib/canvas/init.js';
   import { getConfig } from '$lib/stores/config.js';
 
   let canvasEl;
   let graphData = $state(null);
   let nodeCount = $state(2);
+  let agentMode = $state(false);
   let searchQuery = $state('');
   let searchResults = $state([]);
   let searchIndex = $state(-1);
@@ -13,6 +14,18 @@
   let showCompare = $state(false);
   let pickedNodes = $state([]);
   let allResponseNodes = $state([]);
+
+  let workDir = $state('未设置');
+
+  async function selectWorkDir() {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const selected = await open({ directory: true, title: '选择 Agent 工作目录' });
+    if (selected) {
+      workDir = selected;
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('set_work_dir', { path: selected });
+    }
+  }
 
   onMount(async () => {
     if (!window.LiteGraph) {
@@ -45,7 +58,8 @@
       if (!text) return;
       promptNode._sent = true;
       const config = getConfig();
-      const result = await createResponseAndSend(graphData, promptNode, config, text);
+      const sendFn = agentMode ? createAgentResponse : createResponseAndSend;
+      const result = await sendFn(graphData, promptNode, config, text);
       if (result && result.text) {
         const newPrompt = createNextPromptNode(graphData, result.responseNode);
         nodeCount += 2;
@@ -179,6 +193,19 @@
       <span class="logo-text">对话画布</span>
       <button class="toolbar-btn" onclick={saveGraph} title="保存对话">💾</button>
       <button class="toolbar-btn" onclick={loadGraph} title="加载对话">📂</button>
+      <button
+        class="agent-toggle"
+        class:active={agentMode}
+        onclick={() => agentMode = !agentMode}
+        title={agentMode ? 'Agent 模式：可调用工具执行任务' : '普通对话模式'}
+      >
+        🤖 {agentMode ? 'Agent' : '对话'}
+      </button>
+      {#if agentMode}
+        <button class="workdir-btn" onclick={selectWorkDir} title={workDir}>
+          📁 {workDir.length > 20 ? '...' + workDir.slice(-18) : workDir}
+        </button>
+      {/if}
     </div>
 
     <div class="toolbar-center">
@@ -388,6 +415,52 @@
 
   .compare-btn:hover {
     background: rgba(251, 191, 36, 0.25);
+  }
+
+  /* Agent 模式开关 */
+  .agent-toggle {
+    background: rgba(167, 139, 250, 0.12);
+    color: #a78bfa;
+    border: 1px solid rgba(167, 139, 250, 0.25);
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+
+  .agent-toggle:hover {
+    background: rgba(167, 139, 250, 0.2);
+  }
+
+  .agent-toggle.active {
+    background: rgba(167, 139, 250, 0.3);
+    color: #c4b5fd;
+    border-color: rgba(167, 139, 250, 0.5);
+    box-shadow: 0 0 12px rgba(167, 139, 250, 0.2);
+  }
+
+  /* 工作目录按钮 */
+  .workdir-btn {
+    background: rgba(255, 255, 255, 0.04);
+    color: #8b90a0;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .workdir-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #e8eaf0;
   }
 
   /* 选择器弹窗 */

@@ -1,6 +1,12 @@
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { registerModelConfigNode } from './ModelConfigNode.js';
 import { registerPromptNode } from './PromptNode.js';
 import { registerResponseNode } from './ResponseNode.js';
+import { registerThinkingNode } from './ThinkingNode.js';
+import { registerToolCallNode } from './ToolCallNode.js';
+import { registerToolResultNode } from './ToolResultNode.js';
+import { registerFileProductNode } from './FileProductNode.js';
 
 export function initCanvas(canvasElement) {
   const LiteGraph = window.LiteGraph;
@@ -16,6 +22,10 @@ export function initCanvas(canvasElement) {
   registerModelConfigNode(LiteGraph);
   registerPromptNode(LiteGraph);
   registerResponseNode(LiteGraph);
+  registerThinkingNode(LiteGraph);
+  registerToolCallNode(LiteGraph);
+  registerToolResultNode(LiteGraph);
+  registerFileProductNode(LiteGraph);
 
   // ========== 设置 canvas 实际像素尺寸 ==========
   const rect = canvasElement.getBoundingClientRect();
@@ -89,7 +99,11 @@ export function initCanvas(canvasElement) {
     nodeColors: {
       'AI/模型配置': '#e94560',
       'Chat/输入': '#34d399',
-      'Chat/回复': '#fbbf24'
+      'Chat/回复': '#fbbf24',
+      'Agent/思考': '#a78bfa',
+      'Agent/工具调用': '#60a5fa',
+      'Agent/工具结果': '#34d399',
+      'Agent/文件产物': '#60a5fa'
     }
   };
 
@@ -241,59 +255,24 @@ export async function createResponseAndSend(graphData, promptNode, config, userM
   responseNode.setStatus('生成中');
 
   try {
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const text = await invoke('chat', {
+      request: {
         model: config.model,
         apiKey: config.apiKey,
         baseUrl: config.baseUrl,
         systemPrompt: config.systemPrompt,
         message: userMessage,
         history
-      })
+      }
     });
 
-    if (!res.ok) {
-      const err = await res.text();
-      responseNode.setText(`错误: ${err}`);
-      responseNode.setStatus('错误');
-      return { responseNode, text: '' };
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let fullText = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value, { stream: true });
-      const lines = chunk.split('\n');
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
-          if (data === '[DONE]') continue;
-          try {
-            const parsed = JSON.parse(data);
-            const delta = parsed.choices?.[0]?.delta?.content;
-            if (delta) {
-              fullText += delta;
-              responseNode.appendText(delta);
-            }
-          } catch (e) {}
-        }
-      }
-    }
-
-    responseNode._aiResponse = fullText;
+    responseNode.setText(text);
+    responseNode._aiResponse = text;
     responseNode.setStatus('完成');
-    return { responseNode, text: fullText };
+    return { responseNode, text };
 
   } catch (err) {
-    responseNode.setText(`请求失败: ${err.message}`);
+    responseNode.setText(`请求失败: ${err}`);
     responseNode.setStatus('错误');
     return { responseNode, text: '' };
   }
@@ -381,9 +360,8 @@ export function createNextPromptNode(graphData, responseNode) {
 /**
  * 导出对话图为 JSON 文件
  */
-export function exportGraph(graphData) {
+export async function exportGraph(graphData) {
   const data = graphData.graph.serialize();
-  // 保存每个节点的自定义数据
   for (const node of graphData.graph._nodes) {
     const extra = {};
     if (node._promptText) extra._promptText = node._promptText;
@@ -400,13 +378,28 @@ export function exportGraph(graphData) {
   }
 
   const json = JSON.stringify(data, null, 2);
-  const blob = new Blob([json], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `conversation-canvas-${new Date().toISOString().slice(0, 10)}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+  const defaultName = `conversation-canvas-${new Date().toISOString().slice(0, 10)}.json`;
+
+  try {
+    const { save } = await import('@tauri-apps/plugin-dialog');
+    const { writeTextFile } = await import('@tauri-apps/plugin-fs');
+    const path = await save({
+      defaultPath: defaultName,
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    });
+    if (path) {
+      await writeTextFile(path, json);
+    }
+  } catch {
+    // 降级：浏览器下载
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = defaultName;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 }
 
 /**
@@ -443,5 +436,151 @@ export function importGraph(graphData, jsonStr) {
   } catch (e) {
     console.error('导入失败:', e);
     return false;
+  }
+}
+
+/**
+ * Agent 模式：调用 /api/agent，通过 SSE 接收 Agent 循环事件
+ * 在节点图上实时创建 思考/工具调用/工具结果 节点
+ */
+export async function createAgentResponse(graphData, promptNode, config, userMessage) {
+  const { graph, canvas, LiteGraph } = graphData;
+
+  const history = buildHistoryFromGraph(promptNode);
+
+  // 创建回复节点
+  const responseNode = LiteGraph.createNode('Chat/回复');
+  responseNode.pos = [promptNode.pos[0] + 400, promptNode.pos[1]];
+  graph.add(responseNode);
+  promptNode.connect(0, responseNode, 0);
+  responseNode._userMessage = userMessage;
+  responseNode.setStatus('生成中');
+
+  let lastNode = responseNode;
+  let lastY = responseNode.pos[1] + responseNode.size[1];
+  let fullText = '';
+  let currentThinkingNode = null;
+  let currentToolCallNode = null;
+
+  function nextPos(baseX, offset) {
+    lastY += offset;
+    return [baseX, lastY];
+  }
+
+  // 监听 Rust 后端推送的 agent 事件
+  const unlisten = await listen('agent-event', (event) => {
+    const ev = event.payload;
+
+    switch (ev.type) {
+      case 'thinking': {
+        if (!currentThinkingNode || currentThinkingNode._statusText.includes('完成')) {
+          currentThinkingNode = LiteGraph.createNode('Agent/思考');
+          const pos = nextPos(responseNode.pos[0] - 60, 180);
+          currentThinkingNode.pos = pos;
+          graph.add(currentThinkingNode);
+          lastNode.connect(0, currentThinkingNode, 0);
+          lastNode = currentThinkingNode;
+          canvas.dirty_canvas = true;
+        }
+        currentThinkingNode.appendText(ev.content);
+        break;
+      }
+
+      case 'text_delta': {
+        fullText += ev.content;
+        responseNode.appendText(ev.content);
+        break;
+      }
+
+      case 'tool_call': {
+        if (currentThinkingNode && !currentThinkingNode._statusText.includes('完成')) {
+          currentThinkingNode.setStatus('完成');
+        }
+        currentThinkingNode = null;
+
+        currentToolCallNode = LiteGraph.createNode('Agent/工具调用');
+        const pos = nextPos(responseNode.pos[0] - 60, 180);
+        currentToolCallNode.pos = pos;
+        graph.add(currentToolCallNode);
+        lastNode.connect(0, currentToolCallNode, 0);
+        lastNode = currentToolCallNode;
+        currentToolCallNode.setToolCall(ev.name, ev.arguments);
+        canvas.dirty_canvas = true;
+        break;
+      }
+
+      case 'tool_result': {
+        if (currentToolCallNode) {
+          currentToolCallNode.setResult(ev.success);
+        }
+
+        const resultNode = LiteGraph.createNode('Agent/工具结果');
+        const pos = nextPos(responseNode.pos[0] - 60, 180);
+        resultNode.pos = pos;
+        graph.add(resultNode);
+        lastNode.connect(0, resultNode, 0);
+        lastNode = resultNode;
+        resultNode.setResult(ev.name, ev.success, ev.content);
+
+        // write_file 成功时，创建文件产物节点
+        if (ev.name === 'write_file' && ev.success && ev.filePath) {
+          const fileNode = LiteGraph.createNode('Agent/文件产物');
+          const filePos = nextPos(responseNode.pos[0] - 60, 180);
+          fileNode.pos = filePos;
+          graph.add(fileNode);
+          lastNode.connect(0, fileNode, 0);
+          lastNode = fileNode;
+          fileNode.setFile(ev.fileName, ev.filePath);
+        }
+
+        currentToolCallNode = null;
+        canvas.dirty_canvas = true;
+        canvas.dirty_bgcanvas = true;
+        break;
+      }
+
+      case 'done': {
+        if (currentThinkingNode && !currentThinkingNode._statusText.includes('完成')) {
+          currentThinkingNode.setStatus('完成');
+        }
+        if (currentToolCallNode) {
+          currentToolCallNode.setResult(true);
+        }
+        responseNode._aiResponse = fullText;
+        responseNode.setStatus('完成');
+        canvas.dirty_canvas = true;
+        canvas.dirty_bgcanvas = true;
+        break;
+      }
+
+      case 'error': {
+        responseNode.setText(`Agent 错误: ${ev.content}`);
+        responseNode.setStatus('错误');
+        break;
+      }
+    }
+  });
+
+  try {
+    // 调用 Rust 后端的 agent 命令（异步，通过事件推送进度）
+    await invoke('agent', {
+      request: {
+        model: config.model,
+        apiKey: config.apiKey,
+        baseUrl: config.baseUrl,
+        systemPrompt: config.systemPrompt,
+        message: userMessage,
+        history
+      }
+    });
+
+    return { responseNode, text: fullText };
+
+  } catch (err) {
+    responseNode.setText(`请求失败: ${err}`);
+    responseNode.setStatus('错误');
+    return { responseNode, text: '' };
+  } finally {
+    unlisten();
   }
 }

@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "tauri": "tauri"
   },
   "devDependencies": {
     "@sveltejs/adapter-auto": "^6.0.0",
@@ -15,6 +16,10 @@
     "vite": "^6.0.0"
   },
   "dependencies": {
+    "@sveltejs/adapter-static": "^3.0.10",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-fs": "^2.5.1",
     "litegraph.js": "^0.7.18"
   },
   "type": "module"

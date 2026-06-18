@@ -1,8 +1,11 @@
 node_modules/
 .svelte-kit/
 build/
+src-tauri/target/
+src-tauri/icons/
 .env
 .env.*
 *.log
 .DS_Store
 Thumbs.db
+src-tauri/gen/
