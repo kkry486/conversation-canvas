@@ -9,6 +9,7 @@
   let searchQuery = $state('');
   let searchResults = $state([]);
   let searchIndex = $state(-1);
+  let selectedResponseNodes = new Set(); // 独立跟踪选中的回复节点
   let compareNodes = $state([]);
   let showCompare = $state(false);
 
@@ -34,8 +35,17 @@
       if (node.type === 'Chat/输入') bindSend(node);
     };
 
-    // 监听选中变化
-    graphData.canvas.onSelectionChange = () => checkSelection();
+    // 监听选中/取消选中，维护独立的回复节点集合
+    graphData.canvas.onNodeSelected = (node) => {
+      if (node.type === 'Chat/回复' && node._responseText) {
+        selectedResponseNodes.add(node);
+        updateCompareNodes();
+      }
+    };
+    graphData.canvas.onNodeDeselected = (node) => {
+      selectedResponseNodes.delete(node);
+      updateCompareNodes();
+    };
 
     return () => { if (graphData) graphData.graph.stop(); };
   });
@@ -112,13 +122,9 @@
   let canvasElement = $state(null);
   $effect(() => { canvasElement = canvasEl; });
 
-  // 对比功能：检测选中的回复节点（2个及以上）
-  function checkSelection() {
-    if (!graphData) return;
-    const selected = graphData.canvas.selected_nodes;
-    if (!selected) { compareNodes = []; return; }
-    const respNodes = Object.values(selected).filter(n => n.type === 'Chat/回复' && n._responseText);
-    compareNodes = respNodes.length >= 2 ? respNodes : [];
+  // 对比功能：从独立集合更新
+  function updateCompareNodes() {
+    compareNodes = selectedResponseNodes.size >= 2 ? [...selectedResponseNodes] : [];
   }
 
   function openCompare() {
