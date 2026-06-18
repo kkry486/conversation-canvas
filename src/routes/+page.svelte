@@ -13,7 +13,6 @@
   let showCompare = $state(false);
   let pickedNodes = $state([]);
   let allResponseNodes = $state([]);
-  let selectedRespNodes = new Set(); // 画布上当前选中的回复节点
 
   onMount(async () => {
     if (!window.LiteGraph) {
@@ -35,14 +34,6 @@
 
     graphData.graph.onNodeAdded = (node) => {
       if (node.type === 'Chat/输入') bindSend(node);
-    };
-
-    // 跟踪选中的回复节点
-    graphData.canvas.onNodeSelected = (node) => {
-      if (node.type === 'Chat/回复') selectedRespNodes.add(node);
-    };
-    graphData.canvas.onNodeDeselected = (node) => {
-      selectedRespNodes.delete(node);
     };
 
     return () => { if (graphData) graphData.graph.stop(); };
@@ -120,20 +111,18 @@
   let canvasElement = $state(null);
   $effect(() => { canvasElement = canvasEl; });
 
-  // 对比分支按钮点击
+  // 对比分支按钮点击：直接读 canvas.selected_nodes
   function onCompareClick() {
     if (!graphData) return;
     allResponseNodes = graphData.graph._nodes.filter(n => n.type === 'Chat/回复' && n._responseText);
 
-    // 过滤出当前选中的回复节点
-    const selected = allResponseNodes.filter(n => selectedRespNodes.has(n));
+    const sel = graphData.canvas.selected_nodes || {};
+    const selected = Object.values(sel).filter(n => n.type === 'Chat/回复' && n._responseText);
 
     if (selected.length >= 2) {
-      // 选中 2+ 个：直接对比
       pickedNodes = selected;
       showCompare = true;
     } else {
-      // 选中 0~1 个：弹窗选择，已选中的预勾选
       pickedNodes = selected.length === 1 ? [selected[0]] : [];
       showPicker = true;
     }
@@ -179,7 +168,7 @@
 <div class="canvas-container">
   <canvas bind:this={canvasEl}></canvas>
 
-  <header class="toolbar">
+  <header class="toolbar" onmousedown={(e) => e.stopPropagation()}>
     <div class="toolbar-left">
       <span class="logo-icon">◆</span>
       <span class="logo-text">对话画布</span>
@@ -205,7 +194,7 @@
     </div>
 
     <div class="toolbar-right">
-      <button class="compare-btn" onclick={onCompareClick}>⚡ 对比分支</button>
+      <button class="compare-btn" onmousedown={(e) => e.preventDefault()} onclick={onCompareClick}>⚡ 对比分支</button>
       <span class="hint">双击空白处搜索节点 · 右键打开菜单</span>
     </div>
   </header>
