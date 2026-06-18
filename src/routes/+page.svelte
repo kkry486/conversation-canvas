@@ -9,9 +9,10 @@
   let searchQuery = $state('');
   let searchResults = $state([]);
   let searchIndex = $state(-1);
-  let selectedResponseNodes = new Set(); // 独立跟踪选中的回复节点
-  let compareNodes = $state([]);
-  let showCompare = $state(false);
+  let showPicker = $state(false);    // 选择弹窗
+  let showCompare = $state(false);   // 对比弹窗
+  let pickedNodes = $state([]);      // 已勾选的节点
+  let allResponseNodes = $state([]); // 所有回复节点
 
   onMount(async () => {
     if (!window.LiteGraph) {
@@ -33,18 +34,6 @@
 
     graphData.graph.onNodeAdded = (node) => {
       if (node.type === 'Chat/输入') bindSend(node);
-    };
-
-    // 监听选中/取消选中，维护独立的回复节点集合
-    graphData.canvas.onNodeSelected = (node) => {
-      if (node.type === 'Chat/回复' && node._responseText) {
-        selectedResponseNodes.add(node);
-        updateCompareNodes();
-      }
-    };
-    graphData.canvas.onNodeDeselected = (node) => {
-      selectedResponseNodes.delete(node);
-      updateCompareNodes();
     };
 
     return () => { if (graphData) graphData.graph.stop(); };
@@ -122,13 +111,26 @@
   let canvasElement = $state(null);
   $effect(() => { canvasElement = canvasEl; });
 
-  // 对比功能：从独立集合更新
-  function updateCompareNodes() {
-    compareNodes = selectedResponseNodes.size >= 2 ? [...selectedResponseNodes] : [];
+  // 打开对比选择器
+  function openPicker() {
+    if (!graphData) return;
+    allResponseNodes = graphData.graph._nodes.filter(n => n.type === 'Chat/回复' && n._responseText);
+    pickedNodes = [];
+    showPicker = true;
   }
 
-  function openCompare() {
-    if (compareNodes.length === 2) showCompare = true;
+  function togglePick(node) {
+    const idx = pickedNodes.indexOf(node);
+    if (idx >= 0) pickedNodes.splice(idx, 1);
+    else pickedNodes.push(node);
+    pickedNodes = pickedNodes; // 触发响应式
+  }
+
+  function startCompare() {
+    if (pickedNodes.length >= 2) {
+      showPicker = false;
+      showCompare = true;
+    }
   }
 
   // 保存/加载
@@ -183,23 +185,50 @@
     </div>
 
     <div class="toolbar-right">
-      {#if compareNodes.length >= 2}
-        <button class="compare-btn" onclick={openCompare}>⚡ 对比分支</button>
-      {/if}
+      <button class="compare-btn" onclick={openPicker}>⚡ 对比分支</button>
       <span class="hint">双击空白处搜索节点 · 右键打开菜单</span>
     </div>
   </header>
 
-  <!-- 对比弹窗 -->
-  {#if showCompare && compareNodes.length >= 2}
-    <div class="compare-overlay" onclick={(e) => { if (e.target === e.currentTarget) showCompare = false; }}>
-      <div class="compare-modal" style="max-width: {Math.min(compareNodes.length * 400, 1400)}px;">
+  <!-- 选择对比节点弹窗 -->
+  {#if showPicker}
+    <div class="compare-overlay" onclick={(e) => { if (e.target === e.currentTarget) showPicker = false; }}>
+      <div class="picker-modal">
         <div class="compare-header">
-          <span>分支对比（{compareNodes.length} 个分支）</span>
+          <span>选择要对比的回复节点</span>
+          <button class="compare-close" onclick={() => showPicker = false}>✕</button>
+        </div>
+        <div class="picker-list">
+          {#if allResponseNodes.length === 0}
+            <div class="picker-empty">暂无回复节点</div>
+          {:else}
+            {#each allResponseNodes as node, i}
+              <label class="picker-item" class:picked={pickedNodes.includes(node)}>
+                <input type="checkbox" checked={pickedNodes.includes(node)} onchange={() => togglePick(node)} />
+                <span class="picker-label">回复 #{i + 1}</span>
+                <span class="picker-preview">{(node._responseText || '').slice(0, 60)}...</span>
+              </label>
+            {/each}
+          {/if}
+        </div>
+        <div class="picker-footer">
+          <span class="picker-count">已选 {pickedNodes.length} 个</span>
+          <button class="picker-confirm" disabled={pickedNodes.length < 2} onclick={startCompare}>开始对比</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- 对比弹窗 -->
+  {#if showCompare}
+    <div class="compare-overlay" onclick={(e) => { if (e.target === e.currentTarget) showCompare = false; }}>
+      <div class="compare-modal" style="max-width: {Math.min(pickedNodes.length * 400, 1400)}px;">
+        <div class="compare-header">
+          <span>分支对比（{pickedNodes.length} 个分支）</span>
           <button class="compare-close" onclick={() => showCompare = false}>✕</button>
         </div>
         <div class="compare-body">
-          {#each compareNodes as node, i}
+          {#each pickedNodes as node, i}
             {#if i > 0}<div class="compare-divider"></div>{/if}
             <div class="compare-col">
               <div class="compare-title">分支 {String.fromCharCode(65 + i)}</div>
@@ -345,6 +374,97 @@
 
   .compare-btn:hover {
     background: rgba(251, 191, 36, 0.25);
+  }
+
+  /* 选择器弹窗 */
+  .picker-modal {
+    background: #1a1d28;
+    border: 1px solid #2a2d3a;
+    border-radius: 12px;
+    width: 500px;
+    max-height: 70vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  }
+
+  .picker-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+  }
+
+  .picker-empty {
+    padding: 20px;
+    text-align: center;
+    color: #4a4d5a;
+  }
+
+  .picker-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  .picker-item:hover { background: rgba(255, 255, 255, 0.04); }
+  .picker-item.picked { background: rgba(251, 191, 36, 0.1); }
+
+  .picker-item input[type="checkbox"] {
+    accent-color: #fbbf24;
+  }
+
+  .picker-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #e8eaf0;
+    white-space: nowrap;
+  }
+
+  .picker-preview {
+    font-size: 11px;
+    color: #6b7080;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+
+  .picker-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 16px;
+    border-top: 1px solid #2a2d3a;
+  }
+
+  .picker-count {
+    font-size: 12px;
+    color: #8b90a0;
+  }
+
+  .picker-confirm {
+    padding: 6px 16px;
+    background: #fbbf24;
+    color: #0f1117;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .picker-confirm:disabled {
+    background: #3a3d4a;
+    color: #6b7080;
+    cursor: not-allowed;
+  }
+
+  .picker-confirm:not(:disabled):hover {
+    background: #fcd34d;
   }
 
   /* 对比弹窗 */
