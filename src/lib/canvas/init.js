@@ -163,9 +163,12 @@ export function initCanvas(canvasElement) {
     ctx.strokeRect(vpX, vpY, vpW, vpH);
   }
 
-  // 绘制缩略图
+  // 绘制缩略图（重置坐标系为屏幕坐标，固定在右下角）
   canvas.onDrawForeground = function (ctx) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     drawMinimap(ctx);
+    ctx.restore();
   };
 
   // 点击缩略图跳转

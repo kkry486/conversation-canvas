@@ -112,13 +112,13 @@
   let canvasElement = $state(null);
   $effect(() => { canvasElement = canvasEl; });
 
-  // 对比功能：检测选中的回复节点
+  // 对比功能：检测选中的回复节点（2个及以上）
   function checkSelection() {
     if (!graphData) return;
     const selected = graphData.canvas.selected_nodes;
     if (!selected) { compareNodes = []; return; }
     const respNodes = Object.values(selected).filter(n => n.type === 'Chat/回复' && n._responseText);
-    compareNodes = respNodes.length === 2 ? respNodes : [];
+    compareNodes = respNodes.length >= 2 ? respNodes : [];
   }
 
   function openCompare() {
@@ -177,7 +177,7 @@
     </div>
 
     <div class="toolbar-right">
-      {#if compareNodes.length === 2}
+      {#if compareNodes.length >= 2}
         <button class="compare-btn" onclick={openCompare}>⚡ 对比分支</button>
       {/if}
       <span class="hint">双击空白处搜索节点 · 右键打开菜单</span>
@@ -185,23 +185,21 @@
   </header>
 
   <!-- 对比弹窗 -->
-  {#if showCompare && compareNodes.length === 2}
+  {#if showCompare && compareNodes.length >= 2}
     <div class="compare-overlay" onclick={(e) => { if (e.target === e.currentTarget) showCompare = false; }}>
-      <div class="compare-modal">
+      <div class="compare-modal" style="max-width: {Math.min(compareNodes.length * 400, 1400)}px;">
         <div class="compare-header">
-          <span>分支对比</span>
+          <span>分支对比（{compareNodes.length} 个分支）</span>
           <button class="compare-close" onclick={() => showCompare = false}>✕</button>
         </div>
         <div class="compare-body">
-          <div class="compare-col">
-            <div class="compare-title">分支 A</div>
-            <div class="compare-text">{compareNodes[0]._responseText || '（无内容）'}</div>
-          </div>
-          <div class="compare-divider"></div>
-          <div class="compare-col">
-            <div class="compare-title">分支 B</div>
-            <div class="compare-text">{compareNodes[1]._responseText || '（无内容）'}</div>
-          </div>
+          {#each compareNodes as node, i}
+            {#if i > 0}<div class="compare-divider"></div>{/if}
+            <div class="compare-col">
+              <div class="compare-title">分支 {String.fromCharCode(65 + i)}</div>
+              <div class="compare-text">{node._responseText || '（无内容）'}</div>
+            </div>
+          {/each}
         </div>
       </div>
     </div>
@@ -362,7 +360,6 @@
     border: 1px solid #2a2d3a;
     border-radius: 12px;
     width: 90%;
-    max-width: 1000px;
     max-height: 80vh;
     display: flex;
     flex-direction: column;
