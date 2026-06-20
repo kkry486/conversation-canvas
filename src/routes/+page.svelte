@@ -1,12 +1,44 @@
 <script>
   import { onMount } from 'svelte';
   import { initCanvas, createResponseAndSend, createAgentResponse, createNextPromptNode, exportGraph, importGraph } from '$lib/canvas/init.js';
-  import { getConfig } from '$lib/stores/config.js';
+  import { getConfig, setConfig } from '$lib/stores/config.js';
+  import SetupDialog from '$lib/components/SetupDialog.svelte';
+  import FileTree from '$lib/components/FileTree.svelte';
+  import FilePreview from '$lib/components/FilePreview.svelte';
 
   let canvasEl;
   let graphData = $state(null);
   let nodeCount = $state(2);
   let agentMode = $state(false);
+  let showSetup = $state(false);
+  let appReady = $state(false);
+  let previewFilePath = $state('');
+  let leftWidth = $state(220);
+  let rightWidth = $state(280);
+  let dragging = $state(null);
+
+  function startDrag(panel, e) {
+    dragging = panel;
+    const startX = e.clientX;
+    const startW = panel === 'left' ? leftWidth : rightWidth;
+
+    function onMove(e) {
+      const delta = e.clientX - startX;
+      if (panel === 'left') {
+        leftWidth = Math.max(100, Math.min(500, startW + delta));
+      } else {
+        rightWidth = Math.max(100, Math.min(600, startW - delta));
+      }
+    }
+    function onUp() {
+      dragging = null;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
   let searchQuery = $state('');
   let searchResults = $state([]);
   let searchIndex = $state(-1);
@@ -16,6 +48,31 @@
   let allResponseNodes = $state([]);
 
   let workDir = $state('未设置');
+  let mcpConnected = $state(false);
+  let mcpLoading = $state(false);
+
+  async function toggleMcp() {
+    if (mcpConnected) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('mcp_disconnect');
+      mcpConnected = false;
+      return;
+    }
+    mcpLoading = true;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      // 自动检测 claude 路径
+      await invoke('mcp_connect', {
+        command: 'mcp-server-filesystem.cmd',
+        args: [workDir || '.']
+      });
+      mcpConnected = true;
+    } catch (e) {
+      alert('MCP 连接失败：' + e + '\n\n请确认已安装 Claude Code：npm install -g @anthropic-ai/claude-code');
+    } finally {
+      mcpLoading = false;
+    }
+  }
 
   async function selectWorkDir() {
     const { open } = await import('@tauri-apps/plugin-dialog');
@@ -28,6 +85,8 @@
   }
 
   onMount(async () => {
+    appReady = true;
+
     if (!window.LiteGraph) {
       const script = document.createElement('script');
       script.src = '/litegraph/litegraph.js';
@@ -59,7 +118,7 @@
       promptNode._sent = true;
       const config = getConfig();
       const sendFn = agentMode ? createAgentResponse : createResponseAndSend;
-      const result = await sendFn(graphData, promptNode, config, text);
+      const result = await sendFn(graphData, promptNode, config, text, mcpConnected);
       if (result && result.text) {
         const newPrompt = createNextPromptNode(graphData, result.responseNode);
         nodeCount += 2;
@@ -182,17 +241,32 @@
     };
     input.click();
   }
+  function onSetupComplete(config) {
+    if (config) setConfig(config);
+    showSetup = false;
+    appReady = true;
+  }
 </script>
 
-<div class="canvas-container">
-  <canvas bind:this={canvasEl}></canvas>
+{#if showSetup}
+  <SetupDialog onSetup={onSetupComplete} />
+{/if}
 
-  <header class="toolbar" onmousedown={(e) => e.stopPropagation()}>
-    <div class="toolbar-left">
-      <span class="logo-icon">◆</span>
-      <span class="logo-text">对话画布</span>
-      <button class="toolbar-btn" onclick={saveGraph} title="保存对话">💾</button>
-      <button class="toolbar-btn" onclick={loadGraph} title="加载对话">📂</button>
+<div class="app-layout">
+  <!-- 左侧文件树 -->
+  <aside class="left-panel" style="width: {leftWidth}px">
+    <FileTree bind:workDir onFileSelect={(path) => previewFilePath = path} />
+  </aside>
+  <div class="resize-handle" onmousedown={(e) => startDrag('left', e)}></div>
+
+  <!-- 中间画布 -->
+  <div class="center-panel">
+    <header class="toolbar" onmousedown={(e) => e.stopPropagation()}>
+      <div class="toolbar-left">
+        <span class="logo-icon">◆</span>
+        <span class="logo-text">对话画布</span>
+        <button class="toolbar-btn" onclick={saveGraph} title="保存对话">💾</button>
+        <button class="toolbar-btn" onclick={loadGraph} title="加载对话">📂</button>
       <button
         class="agent-toggle"
         class:active={agentMode}
@@ -204,6 +278,15 @@
       {#if agentMode}
         <button class="workdir-btn" onclick={selectWorkDir} title={workDir}>
           📁 {workDir.length > 20 ? '...' + workDir.slice(-18) : workDir}
+        </button>
+        <button
+          class="mcp-toggle"
+          class:active={mcpConnected}
+          class:loading={mcpLoading}
+          onclick={toggleMcp}
+          title={mcpConnected ? 'MCP 已连接，点击断开' : '连接 Claude Code MCP'}
+        >
+          {mcpLoading ? '⏳ 连接中...' : mcpConnected ? '🔗 MCP' : '🔌 MCP'}
         </button>
       {/if}
     </div>
@@ -230,6 +313,10 @@
       <span class="hint">双击空白处搜索节点 · 右键打开菜单</span>
     </div>
   </header>
+
+  <div class="canvas-wrap">
+    <canvas bind:this={canvasEl}></canvas>
+  </div>
 
   <!-- 选择对比节点弹窗 -->
   {#if showPicker}
@@ -280,14 +367,147 @@
       </div>
     </div>
   {/if}
-</div>
+</div> <!-- center-panel -->
+
+  <div class="resize-handle right-handle" onmousedown={(e) => startDrag('right', e)}></div>
+  <!-- 右侧文件预览 -->
+  <aside class="right-panel" style="width: {rightWidth}px">
+    <FilePreview bind:filePath={previewFilePath} />
+  </aside>
+</div> <!-- app-layout -->
 
 <style>
-  .canvas-container {
+  .app-layout {
     width: 100vw;
+    height: 100vh;
+    display: flex;
+    overflow: hidden;
+  }
+
+  .left-panel {
+    height: 100vh;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  .center-panel {
+    flex: 1;
     height: 100vh;
     position: relative;
     overflow: hidden;
+    min-width: 0;
+  }
+
+  .canvas-wrap {
+    width: 100%;
+    height: 100%;
+    position: relative;
+  }
+
+  .bottom-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: rgba(15, 17, 23, 0.95);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid #2a2d3a;
+    padding: 8px 16px 12px;
+    z-index: 100;
+  }
+
+  .input-info {
+    margin-bottom: 6px;
+  }
+
+  .selected-hint {
+    font-size: 11px;
+    color: #6b7080;
+  }
+
+  .input-row {
+    display: flex;
+    gap: 8px;
+  }
+
+  .bottom-input {
+    flex: 1;
+    padding: 10px 14px;
+    background: #1a1d28;
+    color: #e8eaf0;
+    border: 1px solid #2a2d3a;
+    border-radius: 8px;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .bottom-input:focus {
+    border-color: #e94560;
+    box-shadow: 0 0 0 3px rgba(233, 69, 96, 0.15);
+  }
+
+  .send-btn {
+    background: #e94560;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 20px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+
+  .send-btn:hover:not(:disabled) {
+    background: #ff6b81;
+    box-shadow: 0 4px 12px rgba(233, 69, 96, 0.35);
+  }
+
+  .send-btn:disabled {
+    background: #3a3d4a;
+    color: #6b7080;
+    cursor: not-allowed;
+  }
+
+  .resize-handle {
+    width: 4px;
+    cursor: col-resize;
+    background: transparent;
+    transition: background 0.15s;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 10;
+  }
+
+  .resize-handle::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 2px;
+    height: 30px;
+    background: #3a3d5a;
+    border-radius: 1px;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+
+  .resize-handle:hover {
+    background: rgba(233, 69, 96, 0.1);
+  }
+
+  .resize-handle:hover::after {
+    opacity: 1;
+  }
+
+  .right-panel {
+    height: 100vh;
+    overflow: hidden;
+    flex-shrink: 0;
   }
 
   canvas {
@@ -461,6 +681,35 @@
   .workdir-btn:hover {
     background: rgba(255, 255, 255, 0.08);
     color: #e8eaf0;
+  }
+
+  /* MCP 开关 */
+  .mcp-toggle {
+    background: rgba(255, 255, 255, 0.04);
+    color: #8b90a0;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+
+  .mcp-toggle:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #e8eaf0;
+  }
+
+  .mcp-toggle.active {
+    background: rgba(52, 211, 153, 0.15);
+    color: #34d399;
+    border-color: rgba(52, 211, 153, 0.3);
+  }
+
+  .mcp-toggle.loading {
+    opacity: 0.6;
+    cursor: wait;
   }
 
   /* 选择器弹窗 */

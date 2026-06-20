@@ -443,7 +443,7 @@ export function importGraph(graphData, jsonStr) {
  * Agent 模式：调用 /api/agent，通过 SSE 接收 Agent 循环事件
  * 在节点图上实时创建 思考/工具调用/工具结果 节点
  */
-export async function createAgentResponse(graphData, promptNode, config, userMessage) {
+export async function createAgentResponse(graphData, promptNode, config, userMessage, useMcp = false) {
   const { graph, canvas, LiteGraph } = graphData;
 
   const history = buildHistoryFromGraph(promptNode);
@@ -570,7 +570,8 @@ export async function createAgentResponse(graphData, promptNode, config, userMes
         baseUrl: config.baseUrl,
         systemPrompt: config.systemPrompt,
         message: userMessage,
-        history
+        history,
+        useMcp
       }
     });
 

@@ -1,3 +1,6 @@
+mod mcp_client;
+
+use mcp_client::OpenAiTool;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -55,6 +58,8 @@ pub struct ChatRequest {
     pub system_prompt: Option<String>,
     pub message: String,
     pub history: Option<Vec<ChatMessage>>,
+    #[serde(default)]
+    pub use_mcp: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -84,6 +89,8 @@ pub struct AgentEvent {
 // ═══════════════════════════════════════════════════
 
 pub struct WorkDir(pub Mutex<PathBuf>);
+
+pub struct McpState(pub Mutex<Option<mcp_client::McpClient>>);
 
 // ═══════════════════════════════════════════════════
 //  工具定义
@@ -327,7 +334,7 @@ async fn call_llm(
     api_key: &str,
     model: &str,
     messages: &[ChatMessage],
-    tools: &[ToolDefinition],
+    tools: &[serde_json::Value],
 ) -> Result<(Option<String>, Option<Vec<ToolCall>>), String> {
     let client = reqwest::Client::new();
 
@@ -425,6 +432,7 @@ async fn chat(
 async fn agent(
     request: ChatRequest,
     work_dir: State<'_, WorkDir>,
+    mcp_state: State<'_, McpState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let dir = work_dir.0.lock().await.clone();
@@ -467,7 +475,31 @@ async fn agent(
         tool_call_id: None,
     });
 
-    let tools = get_tool_definitions();
+    // 获取工具列表：优先用 MCP 工具，否则用内置工具
+    let tools: Vec<serde_json::Value> = if request.use_mcp {
+        let mcp = mcp_state.0.lock().await;
+        if let Some(client) = mcp.as_ref() {
+            match client.list_tools().await {
+                Ok(mcp_tools) => {
+                    mcp_tools.iter().map(|t| {
+                        let tool = t.to_openai_tool();
+                        serde_json::to_value(tool).unwrap()
+                    }).collect()
+                }
+                Err(e) => {
+                    let _ = app.emit("agent-event", serde_json::json!({
+                        "type": "error",
+                        "content": format!("获取 MCP 工具失败: {e}，使用内置工具")
+                    }));
+                    get_tool_definitions().iter().map(|t| serde_json::to_value(t).unwrap()).collect()
+                }
+            }
+        } else {
+            get_tool_definitions().iter().map(|t| serde_json::to_value(t).unwrap()).collect()
+        }
+    } else {
+        get_tool_definitions().iter().map(|t| serde_json::to_value(t).unwrap()).collect()
+    };
     let max_iterations = 10;
 
     for _ in 0..max_iterations {
@@ -529,9 +561,20 @@ async fn agent(
                 "arguments": parsed_args
             }));
 
-            // 执行
-            let (success, content, file_path, file_name) =
-                execute_tool(func_name, &parsed_args, &dir).await;
+            // 执行：优先用 MCP，否则用内置工具
+            let (success, content, file_path, file_name) = if request.use_mcp {
+                let mcp = mcp_state.0.lock().await;
+                if let Some(client) = mcp.as_ref() {
+                    match client.call_tool(func_name, parsed_args.clone()).await {
+                        Ok(result) => (true, result, None, None),
+                        Err(e) => (false, format!("MCP 工具执行失败: {e}"), None, None),
+                    }
+                } else {
+                    execute_tool(func_name, &parsed_args, &dir).await
+                }
+            } else {
+                execute_tool(func_name, &parsed_args, &dir).await
+            };
 
             // execute_command 后：检测新文件
             if func_name == "execute_command" && success {
@@ -624,6 +667,200 @@ fn set_work_dir(path: String, work_dir: State<'_, WorkDir>) {
 }
 
 // ═══════════════════════════════════════════════════
+//  MCP 命令
+// ═══════════════════════════════════════════════════
+
+#[tauri::command]
+async fn mcp_connect(command: String, args: Vec<String>, mcp_state: State<'_, McpState>) -> Result<Vec<serde_json::Value>, String> {
+    // 断开旧连接
+    {
+        let mut state = mcp_state.0.lock().await;
+        if state.is_some() {
+            state.take().unwrap().close().await;
+        }
+    }
+
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let client = mcp_client::McpClient::connect(&command, &arg_refs).await?;
+
+    // 获取工具列表
+    let tools = client.list_tools().await?;
+    let openai_tools: Vec<serde_json::Value> = tools.iter().map(|t| {
+        let tool = t.to_openai_tool();
+        serde_json::to_value(tool).unwrap()
+    }).collect();
+
+    // 保存连接
+    {
+        let mut state = mcp_state.0.lock().await;
+        *state = Some(client);
+    }
+
+    Ok(openai_tools)
+}
+
+#[tauri::command]
+async fn mcp_list_tools(mcp_state: State<'_, McpState>) -> Result<Vec<serde_json::Value>, String> {
+    let state = mcp_state.0.lock().await;
+    let client = state.as_ref().ok_or("MCP 未连接")?;
+    let tools = client.list_tools().await?;
+    let openai_tools: Vec<serde_json::Value> = tools.iter().map(|t| {
+        let tool = t.to_openai_tool();
+        serde_json::to_value(tool).unwrap()
+    }).collect();
+    Ok(openai_tools)
+}
+
+#[tauri::command]
+async fn mcp_call_tool(name: String, arguments: serde_json::Value, mcp_state: State<'_, McpState>) -> Result<String, String> {
+    let state = mcp_state.0.lock().await;
+    let client = state.as_ref().ok_or("MCP 未连接")?;
+    client.call_tool(&name, arguments).await
+}
+
+#[tauri::command]
+async fn mcp_disconnect(mcp_state: State<'_, McpState>) -> Result<(), String> {
+    let mut state = mcp_state.0.lock().await;
+    if let Some(client) = state.take() {
+        client.close().await;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppConfig {
+    pub model: String,
+    pub api_key: String,
+    pub base_url: String,
+    #[serde(default)]
+    pub system_prompt: String,
+    #[serde(default = "default_true")]
+    pub remember: bool,
+}
+
+fn default_true() -> bool { true }
+
+fn config_path() -> PathBuf {
+    let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+    config_dir.join("conversation-canvas").join("config.json")
+}
+
+#[tauri::command]
+fn save_config(config: AppConfig) -> Result<(), String> {
+    let path = config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    }
+    let json = serde_json::to_string_pretty(&config).map_err(|e| format!("序列化失败: {e}"))?;
+    std::fs::write(&path, json).map_err(|e| format!("写入配置失败: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn load_config() -> Result<Option<AppConfig>, String> {
+    let path = config_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let json = std::fs::read_to_string(&path).map_err(|e| format!("读取配置失败: {e}"))?;
+    let config: AppConfig = serde_json::from_str(&json).map_err(|e| format!("解析配置失败: {e}"))?;
+    Ok(Some(config))
+}
+
+#[derive(Serialize)]
+struct DirEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+    depth: usize,
+}
+
+#[tauri::command]
+fn read_dir_recursive(path: String, max_depth: usize) -> Result<Vec<DirEntry>, String> {
+    let max = if max_depth == 0 { 3 } else { max_depth };
+    let mut entries = Vec::new();
+    fn scan(dir: &Path, depth: usize, max: usize, entries: &mut Vec<DirEntry>) -> Result<(), String> {
+        if depth > max { return Ok(()); }
+        let mut items: Vec<_> = std::fs::read_dir(dir)
+            .map_err(|e| format!("读取目录失败: {e}"))?
+            .filter_map(|e| e.ok())
+            .collect();
+        items.sort_by(|a, b| {
+            let a_dir = a.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let b_dir = b.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            b_dir.cmp(&a_dir).then_with(|| a.file_name().cmp(&b.file_name()))
+        });
+        for item in items {
+            let name = item.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || name == "node_modules" || name == "target" || name == ".git" {
+                continue;
+            }
+            let is_dir = item.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let full_path = item.path().to_string_lossy().to_string();
+            entries.push(DirEntry {
+                name,
+                path: full_path.clone(),
+                is_dir,
+                depth,
+            });
+            if is_dir {
+                scan(&Path::new(&full_path), depth + 1, max, entries)?;
+            }
+        }
+        Ok(())
+    }
+    scan(&Path::new(&path), 0, max, &mut entries)?;
+    Ok(entries)
+}
+
+#[tauri::command]
+fn read_file_content(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {e}"))
+}
+
+#[tauri::command]
+fn find_claude_path() -> Result<String, String> {
+    // 在常见路径中查找 claude CLI
+    let home = dirs::home_dir().ok_or("无法获取用户目录")?;
+    let candidates = if cfg!(target_os = "windows") {
+        vec![
+            home.join("AppData/Roaming/npm/claude.cmd"),
+            home.join("AppData/Local/npm/claude.cmd"),
+            PathBuf::from("C:/Program Files/nodejs/claude.cmd"),
+        ]
+    } else {
+        vec![
+            home.join(".npm-global/bin/claude"),
+            home.join(".local/bin/claude"),
+            PathBuf::from("/usr/local/bin/claude"),
+            PathBuf::from("/opt/homebrew/bin/claude"),
+        ]
+    };
+
+    for path in &candidates {
+        if path.exists() {
+            return Ok(path.to_string_lossy().to_string());
+        }
+    }
+
+    // 尝试 which/where
+    let which = if cfg!(target_os = "windows") { "where" } else { "which" };
+    if let Ok(output) = Command::new(which).arg("claude").output() {
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !stdout.is_empty() && !stdout.contains("INFO") {
+            // 取第一行
+            let first_line = stdout.lines().next().unwrap_or("").trim().to_string();
+            if !first_line.is_empty() {
+                return Ok(first_line);
+            }
+        }
+    }
+
+    Err("找不到 claude CLI，请确认已安装：npm install -g @anthropic-ai/claude-code".to_string())
+}
+
+// ═══════════════════════════════════════════════════
 //  入口
 // ═══════════════════════════════════════════════════
 
@@ -638,11 +875,21 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(WorkDir(Mutex::new(default_dir)))
+        .manage(McpState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             chat,
             agent,
             open_file,
             set_work_dir,
+            mcp_connect,
+            mcp_list_tools,
+            mcp_call_tool,
+            mcp_disconnect,
+            find_claude_path,
+            save_config,
+            load_config,
+            read_dir_recursive,
+            read_file_content,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

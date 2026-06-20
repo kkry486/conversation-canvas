@@ -82,8 +82,13 @@ export function getConfig() {
   return currentConfig;
 }
 
-export function setConfig(key, value) {
-  currentConfig[key] = value;
+export function setConfig(keyOrObj, value) {
+  if (typeof keyOrObj === 'object' && keyOrObj !== null) {
+    // 传入整个配置对象
+    Object.assign(currentConfig, keyOrObj);
+  } else {
+    currentConfig[keyOrObj] = value;
+  }
 }
 
 export function setModelPreset(presetId) {
