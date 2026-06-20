@@ -1,10 +1,8 @@
 <script>
-  let { nodes, depth = 0, onFileSelect } = $props();
+  let { nodes, depth = 0, onFileSelect, highlightedFile = '' } = $props();
 
-  function toggle(node) {
-    // 直接修改属性，Svelte 5 深度响应式应该能追踪
+  function toggleNode(node) {
     node.expanded = !node.expanded;
-    // 为了保险，重新赋值 nodes 数组触发更新
     nodes = [...nodes];
   }
 </script>
@@ -12,7 +10,8 @@
 {#each nodes as node (node.path)}
   <button
     class="tree-item"
-    onclick={() => node.is_dir ? toggle(node) : onFileSelect?.(node.path)}
+    class:highlighted={highlightedFile && node.path === highlightedFile}
+    onclick={() => node.is_dir ? toggleNode(node) : onFileSelect?.(node.path)}
     style="padding-left: {depth * 16 + 8}px"
   >
     <span class="icon">
@@ -57,6 +56,7 @@
     overflow: hidden;
   }
   .tree-item:hover { background: rgba(255,255,255,0.04); }
+  .tree-item.highlighted { background: rgba(52,211,153,0.15); color: #34d399; }
   .icon { font-size: 13px; flex-shrink: 0; width: 18px; text-align: center; }
   .name { overflow: hidden; text-overflow: ellipsis; }
 </style>

@@ -1,38 +1,52 @@
 <script>
   import { onMount } from 'svelte';
   import { initCanvas, createResponseAndSend, createAgentResponse, createNextPromptNode, exportGraph, importGraph } from '$lib/canvas/init.js';
-  import { getConfig, setConfig } from '$lib/stores/config.js';
+  import { getConfig, setConfig, getApp, setApp } from '$lib/stores/app.js';
   import SetupDialog from '$lib/components/SetupDialog.svelte';
   import FileTree from '$lib/components/FileTree.svelte';
   import FilePreview from '$lib/components/FilePreview.svelte';
   import McpManager from '$lib/components/McpManager.svelte';
+  import AgentLog from '$lib/components/AgentLog.svelte';
+  import GuideDialog from '$lib/components/GuideDialog.svelte';
 
   let canvasEl;
   let graphData = $state(null);
   let nodeCount = $state(2);
-  let agentMode = $state(false);
+  let agentMode = $state(getApp().agentMode);
   let showSetup = $state(false);
   let appReady = $state(false);
-  let previewFilePath = $state('');
-  let leftWidth = $state(220);
-  let rightWidth = $state(280);
+  let showMcpManager = $state(false);
+  let previewFilePath = $state(getApp().previewFilePath);
+  let leftWidth = $state(getApp().leftWidth);
+  let rightWidth = $state(getApp().rightWidth);
+  let workDir = $state(getApp().workDir);
+  let mcpConnected = $state(getApp().mcpConnected);
   let dragging = $state(null);
+  let fileTreeRef = $state(null);
+  let rightTopRatio = $state(0.4);
+  let showGuide = $state(false);
 
   function startDrag(panel, e) {
-    dragging = panel;
     const startX = e.clientX;
-    const startW = panel === 'left' ? leftWidth : rightWidth;
+    const startY = e.clientY;
+    const startLeftW = leftWidth;
+    const startRightW = rightWidth;
+    const startRatio = rightTopRatio;
 
     function onMove(e) {
-      const delta = e.clientX - startX;
       if (panel === 'left') {
-        leftWidth = Math.max(100, Math.min(500, startW + delta));
-      } else {
-        rightWidth = Math.max(100, Math.min(600, startW - delta));
+        leftWidth = Math.max(100, Math.min(500, startLeftW + (e.clientX - startX)));
+      } else if (panel === 'right') {
+        rightWidth = Math.max(100, Math.min(600, startRightW - (e.clientX - startX)));
+      } else if (panel === 'rightH') {
+        const el = document.querySelector('.right-panel');
+        if (el) {
+          const h = el.offsetHeight;
+          rightTopRatio = Math.max(0.15, Math.min(0.85, startRatio + (e.clientY - startY) / h));
+        }
       }
     }
     function onUp() {
-      dragging = null;
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
     }
@@ -47,17 +61,14 @@
   let showCompare = $state(false);
   let pickedNodes = $state([]);
   let allResponseNodes = $state([]);
-
-  let workDir = $state('未设置');
-  let mcpConnected = $state(false);
   let mcpLoading = $state(false);
-  let showMcpManager = $state(false);
 
   async function toggleMcp() {
     if (mcpConnected) {
       const { invoke } = await import('@tauri-apps/api/core');
       await invoke('mcp_disconnect');
       mcpConnected = false;
+      setApp('mcpConnected', false);
       return;
     }
     mcpLoading = true;
@@ -69,6 +80,7 @@
         args: [workDir || '.']
       });
       mcpConnected = true;
+      setApp('mcpConnected', true);
     } catch (e) {
       alert('MCP 连接失败：' + e + '\n\n请确认已安装 Claude Code：npm install -g @anthropic-ai/claude-code');
     } finally {
@@ -81,6 +93,7 @@
     const selected = await open({ directory: true, title: '选择 Agent 工作目录' });
     if (selected) {
       workDir = selected;
+      setApp('workDir', selected);
       const { invoke } = await import('@tauri-apps/api/core');
       await invoke('set_work_dir', { path: selected });
     }
@@ -88,6 +101,11 @@
 
   onMount(async () => {
     appReady = true;
+
+    // 首次使用显示引导
+    if (!localStorage.getItem('canvas-guide-seen')) {
+      showGuide = true;
+    }
 
     if (!window.LiteGraph) {
       const script = document.createElement('script');
@@ -110,7 +128,38 @@
       if (node.type === 'Chat/输入') bindSend(node);
     };
 
-    return () => { if (graphData) graphData.graph.stop(); };
+    // 快捷键
+    function handleKeydown(e) {
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 's') {
+          e.preventDefault();
+          saveGraph();
+        } else if (e.key === 'o') {
+          e.preventDefault();
+          loadGraph();
+        } else if (e.key === 'n') {
+          e.preventDefault();
+          // 新建对话：清空画布
+          if (graphData) {
+            graphData.graph.clear();
+            const config = graphData.LiteGraph.createNode('AI/模型配置');
+            config.pos = [300, 100];
+            graphData.graph.add(config);
+            const input = graphData.LiteGraph.createNode('Chat/输入');
+            input.pos = [300, 300];
+            graphData.graph.add(input);
+            config.connect(0, input, 0);
+            bindSend(input);
+          }
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKeydown);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeydown);
+      if (graphData) graphData.graph.stop();
+    };
   });
 
   function bindSend(promptNode) {
@@ -120,7 +169,11 @@
       promptNode._sent = true;
       const config = getConfig();
       const sendFn = agentMode ? createAgentResponse : createResponseAndSend;
-      const result = await sendFn(graphData, promptNode, config, text, mcpConnected);
+      const onFileCreated = agentMode ? (filePath) => {
+        fileTreeRef?.refresh();
+        fileTreeRef?.highlight(filePath);
+      } : null;
+      const result = await sendFn(graphData, promptNode, config, text, mcpConnected, onFileCreated);
       if (result && result.text) {
         const newPrompt = createNextPromptNode(graphData, result.responseNode);
         nodeCount += 2;
@@ -250,21 +303,21 @@
   }
 </script>
 
-{#if showSetup}
-  <SetupDialog onSetup={onSetupComplete} />
+{#if showGuide}
+  <GuideDialog onComplete={() => { showGuide = false; localStorage.setItem('canvas-guide-seen', '1'); }} />
 {/if}
 
 {#if showMcpManager}
   <McpManager
     onClose={() => showMcpManager = false}
-    onConnect={() => mcpConnected = true}
+    onConnect={() => { mcpConnected = true; setApp('mcpConnected', true); }}
   />
 {/if}
 
 <div class="app-layout">
   <!-- 左侧文件树 -->
   <aside class="left-panel" style="width: {leftWidth}px">
-    <FileTree bind:workDir onFileSelect={(path) => previewFilePath = path} />
+    <FileTree bind:this={fileTreeRef} bind:workDir onFileSelect={(path) => { previewFilePath = path; rightTab = 'preview'; }} />
   </aside>
   <div class="resize-handle" onmousedown={(e) => startDrag('left', e)}></div>
 
@@ -279,7 +332,7 @@
       <button
         class="agent-toggle"
         class:active={agentMode}
-        onclick={() => agentMode = !agentMode}
+        onclick={() => { agentMode = !agentMode; setApp('agentMode', agentMode); }}
         title={agentMode ? 'Agent 模式：可调用工具执行任务' : '普通对话模式'}
       >
         🤖 {agentMode ? 'Agent' : '对话'}
@@ -378,9 +431,15 @@
 </div> <!-- center-panel -->
 
   <div class="resize-handle right-handle" onmousedown={(e) => startDrag('right', e)}></div>
-  <!-- 右侧文件预览 -->
+  <!-- 右侧栏 -->
   <aside class="right-panel" style="width: {rightWidth}px">
-    <FilePreview bind:filePath={previewFilePath} />
+    <div class="right-top" style="height: {rightTopRatio * 100}%">
+      <AgentLog onAgentStart={() => {}} onAgentDone={() => {}} />
+    </div>
+    <div class="horizontal-resize" onmousedown={(e) => startDrag('rightH', e)}></div>
+    <div class="right-bottom" style="flex: 1">
+      <FilePreview bind:filePath={previewFilePath} />
+    </div>
   </aside>
 </div> <!-- app-layout -->
 
@@ -516,6 +575,52 @@
     height: 100vh;
     overflow: hidden;
     flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .right-top {
+    height: 40%;
+    min-height: 80px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  .right-bottom {
+    flex: 1;
+    min-height: 80px;
+    overflow: hidden;
+  }
+
+  .horizontal-resize {
+    height: 4px;
+    cursor: row-resize;
+    background: transparent;
+    transition: background 0.15s;
+    flex-shrink: 0;
+    position: relative;
+  }
+
+  .horizontal-resize::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 30px;
+    height: 2px;
+    background: #3a3d5a;
+    border-radius: 1px;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+
+  .horizontal-resize:hover {
+    background: rgba(233, 69, 96, 0.1);
+  }
+
+  .horizontal-resize:hover::after {
+    opacity: 1;
   }
 
   canvas {

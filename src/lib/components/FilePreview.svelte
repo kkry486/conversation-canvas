@@ -6,7 +6,6 @@
   let content = $state('');
   let fileName = $state('');
   let loading = $state(false);
-  let collapsed = $state(false);
 
   $effect(() => {
     if (filePath) {
@@ -19,7 +18,6 @@
 
   async function loadFile(path) {
     loading = true;
-    collapsed = false;
     fileName = path.split(/[/\\]/).pop() || '';
     try {
       const text = await invoke('read_file_content', { path });
@@ -32,29 +30,22 @@
   }
 </script>
 
-<div class="file-preview" class:collapsed>
+<div class="file-preview">
   <div class="preview-header">
-    {#if !collapsed}
-      <span class="file-name">📄 {fileName || '预览'}</span>
-    {/if}
-    <button class="toggle-btn" onclick={() => collapsed = !collapsed} title={collapsed ? '展开' : '收起'}>
-      {collapsed ? '◀' : '▶'}
-    </button>
+    <span class="file-name">📄 {fileName || '预览'}</span>
   </div>
 
-  {#if !collapsed}
-    {#if filePath}
-      {#if loading}
-        <div class="loading">加载中...</div>
-      {:else}
-        <pre class="code"><code>{content}</code></pre>
-      {/if}
+  {#if filePath}
+    {#if loading}
+      <div class="loading">加载中...</div>
     {:else}
-      <div class="empty">
-        <span class="empty-icon">📄</span>
-        <span class="empty-text">点击文件查看内容</span>
-      </div>
+      <pre class="code"><code>{content}</code></pre>
     {/if}
+  {:else}
+    <div class="empty">
+      <span class="empty-icon">📄</span>
+      <span class="empty-text">点击文件查看内容</span>
+    </div>
   {/if}
 </div>
 
@@ -64,19 +55,10 @@
     display: flex;
     flex-direction: column;
     background: #12141d;
-    border-left: 1px solid #2a2d3a;
-    transition: width 0.2s;
-  }
-
-  .file-preview.collapsed {
-    width: 36px;
   }
 
   .preview-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px 8px;
+    padding: 8px 12px;
     border-bottom: 1px solid #2a2d3a;
   }
 
@@ -84,25 +66,6 @@
     font-size: 12px;
     font-weight: 600;
     color: #8b90a0;
-    white-space: nowrap;
-    overflow: hidden;
-  }
-
-  .toggle-btn {
-    background: transparent;
-    border: none;
-    color: #6b7080;
-    font-size: 10px;
-    cursor: pointer;
-    padding: 4px;
-    border-radius: 4px;
-    transition: all 0.15s;
-    flex-shrink: 0;
-  }
-
-  .toggle-btn:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: #e8eaf0;
   }
 
   .loading {

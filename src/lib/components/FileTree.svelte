@@ -6,6 +6,7 @@
 
   let rootEntries = $state([]);
   let collapsed = $state(false);
+  let highlightedFile = $state('');
 
   async function loadDir(path) {
     if (!path || path === '未设置') { rootEntries = []; return; }
@@ -16,6 +17,18 @@
       console.error(e);
       rootEntries = [];
     }
+  }
+
+  // 暴露刷新方法给父组件
+  export async function refresh() {
+    await loadDir(workDir);
+  }
+
+  // 暴露高亮方法
+  export function highlight(filePath) {
+    highlightedFile = filePath;
+    // 3秒后取消高亮
+    setTimeout(() => { highlightedFile = ''; }, 3000);
   }
 
   function buildTree(flat) {
@@ -53,7 +66,10 @@
 
 <div class="file-tree" class:collapsed>
   <div class="tree-header">
-    {#if !collapsed}<span class="tree-title">📁 文件</span>{/if}
+    {#if !collapsed}
+      <span class="tree-title">📁 文件</span>
+      <button class="refresh-btn" onclick={() => refresh()} title="刷新">↻</button>
+    {/if}
     <button class="toggle-btn" onclick={() => collapsed = !collapsed}>
       {collapsed ? '▶' : '◀'}
     </button>
@@ -66,7 +82,7 @@
       <div class="empty-hint">目录为空</div>
     {:else}
       <div class="tree-content">
-        <TreeNode nodes={rootEntries} {onFileSelect} />
+        <TreeNode nodes={rootEntries} {onFileSelect} {highlightedFile} />
       </div>
     {/if}
   {/if}
@@ -79,6 +95,8 @@
   .tree-title { font-size: 12px; font-weight: 600; color: #8b90a0; text-transform: uppercase; letter-spacing: 0.5px; white-space: nowrap; }
   .toggle-btn { background: transparent; border: none; color: #6b7080; font-size: 10px; cursor: pointer; padding: 4px; border-radius: 4px; flex-shrink: 0; }
   .toggle-btn:hover { background: rgba(255,255,255,0.08); color: #e8eaf0; }
+  .refresh-btn { background: transparent; border: none; color: #6b7080; font-size: 12px; cursor: pointer; padding: 2px 4px; border-radius: 4px; }
+  .refresh-btn:hover { background: rgba(255,255,255,0.08); color: #34d399; }
   .empty-hint { padding: 20px 12px; font-size: 12px; color: #6b7080; text-align: center; }
   .tree-content { flex: 1; overflow-y: auto; padding: 4px 0; }
 </style>
