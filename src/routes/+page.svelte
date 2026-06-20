@@ -5,6 +5,7 @@
   import SetupDialog from '$lib/components/SetupDialog.svelte';
   import FileTree from '$lib/components/FileTree.svelte';
   import FilePreview from '$lib/components/FilePreview.svelte';
+  import McpManager from '$lib/components/McpManager.svelte';
 
   let canvasEl;
   let graphData = $state(null);
@@ -50,6 +51,7 @@
   let workDir = $state('未设置');
   let mcpConnected = $state(false);
   let mcpLoading = $state(false);
+  let showMcpManager = $state(false);
 
   async function toggleMcp() {
     if (mcpConnected) {
@@ -252,6 +254,13 @@
   <SetupDialog onSetup={onSetupComplete} />
 {/if}
 
+{#if showMcpManager}
+  <McpManager
+    onClose={() => showMcpManager = false}
+    onConnect={() => mcpConnected = true}
+  />
+{/if}
+
 <div class="app-layout">
   <!-- 左侧文件树 -->
   <aside class="left-panel" style="width: {leftWidth}px">
@@ -282,11 +291,10 @@
         <button
           class="mcp-toggle"
           class:active={mcpConnected}
-          class:loading={mcpLoading}
-          onclick={toggleMcp}
-          title={mcpConnected ? 'MCP 已连接，点击断开' : '连接 Claude Code MCP'}
+          onclick={() => showMcpManager = true}
+          title="MCP 服务器管理"
         >
-          {mcpLoading ? '⏳ 连接中...' : mcpConnected ? '🔗 MCP' : '🔌 MCP'}
+          {mcpConnected ? '🔗 MCP' : '🔌 MCP'}
         </button>
       {/if}
     </div>

@@ -27,6 +27,17 @@ export function initCanvas(canvasElement) {
   registerToolResultNode(LiteGraph);
   registerFileProductNode(LiteGraph);
 
+  // 清除 LiteGraph 默认节点类型，只保留自定义的
+  const allowedTypes = new Set([
+    'AI/模型配置', 'Chat/输入', 'Chat/回复',
+    'Agent/思考', 'Agent/工具调用', 'Agent/工具结果', 'Agent/文件产物'
+  ]);
+  for (const key of Object.keys(LiteGraph.registered_node_types)) {
+    if (!allowedTypes.has(key)) {
+      delete LiteGraph.registered_node_types[key];
+    }
+  }
+
   // ========== 设置 canvas 实际像素尺寸 ==========
   const rect = canvasElement.getBoundingClientRect();
   canvasElement.width = rect.width;
@@ -40,7 +51,7 @@ export function initCanvas(canvasElement) {
   canvas.resize();
 
   // 配置交互
-  canvas.allow_searchbox = true;
+  canvas.allow_searchbox = false;
   canvas.allow_dragnodes = true;
   canvas.allow_interaction = true;
   canvas.render_canvas_border = false;
@@ -230,6 +241,17 @@ export function initCanvas(canvasElement) {
 
   // 自动连线
   configNode.connect(0, promptNode, 0);
+
+  // 限制右键菜单只显示自定义节点类型
+  graph._allowedNodeTypes = [
+    'AI/模型配置',
+    'Chat/输入',
+    'Chat/回复',
+    'Agent/思考',
+    'Agent/工具调用',
+    'Agent/工具结果',
+    'Agent/文件产物'
+  ];
 
   graph.start();
 

@@ -819,6 +819,68 @@ fn read_file_content(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {e}"))
 }
 
+fn config_dir() -> PathBuf {
+    dirs::config_dir().unwrap_or_else(|| PathBuf::from("."))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: String,
+    #[serde(default)]
+    pub connected: bool,
+}
+
+#[tauri::command]
+fn load_mcp_config() -> Result<Vec<McpServerConfig>, String> {
+    let path = config_dir().join("conversation-canvas").join("mcp.json");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let json = std::fs::read_to_string(&path).map_err(|e| format!("读取失败: {e}"))?;
+    let config: Vec<McpServerConfig> = serde_json::from_str(&json).map_err(|e| format!("解析失败: {e}"))?;
+    Ok(config)
+}
+
+#[tauri::command]
+fn save_mcp_config(config: Vec<McpServerConfig>) -> Result<(), String> {
+    let path = config_dir().join("conversation-canvas").join("mcp.json");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
+    }
+    let json = serde_json::to_string_pretty(&config).map_err(|e| format!("序列化失败: {e}"))?;
+    std::fs::write(&path, json).map_err(|e| format!("写入失败: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn install_npm_package(package_name: String, command: String) -> Result<String, String> {
+    // 先检查命令是否已存在
+    let which = if cfg!(target_os = "windows") { "where" } else { "which" };
+    let check = Command::new(which).arg(&command).output();
+    if let Ok(output) = check {
+        if output.status.success() {
+            return Ok(format!("{} 已安装，无需重复安装", package_name));
+        }
+    }
+
+    // 不存在则安装
+    let npm = if cfg!(target_os = "windows") { "npm.cmd" } else { "npm" };
+    let output = Command::new(npm)
+        .args(["install", "-g", &package_name])
+        .output()
+        .map_err(|e| format!("执行 npm 失败: {e}"))?;
+
+    if output.status.success() {
+        Ok(format!("{} 安装成功", package_name))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("安装失败: {}", stderr))
+    }
+}
+
 #[tauri::command]
 fn find_claude_path() -> Result<String, String> {
     // 在常见路径中查找 claude CLI
@@ -888,6 +950,9 @@ pub fn run() {
             find_claude_path,
             save_config,
             load_config,
+            load_mcp_config,
+            save_mcp_config,
+            install_npm_package,
             read_dir_recursive,
             read_file_content,
         ])

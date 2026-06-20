@@ -86,6 +86,12 @@ html, body {
   padding: 6px 12px !important;
 }
 
+/* 修复右键菜单跟随滚动 */
+.litemenu {
+  position: fixed !important;
+  z-index: 99999 !important;
+}
+
 /* ========== LiteGraph DOM 覆盖 ========== */
 
 .litegraph.litecanvas {
