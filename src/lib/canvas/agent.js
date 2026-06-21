@@ -18,6 +18,9 @@ export async function createAgentResponse(graphData, promptNode, config, userMes
   responseNode._userMessage = userMessage;
   responseNode.setStatus('生成中');
 
+  // 标记 PromptNode 为执行中，禁用发送按钮
+  promptNode._isRunning = true;
+
   let lastNode = responseNode;
   let lastY = promptNode.pos[1] - 180;
   let fullText = '';
@@ -136,6 +139,8 @@ export async function createAgentResponse(graphData, promptNode, config, userMes
     responseNode.setStatus('错误');
     return { responseNode, text: '' };
   } finally {
+    // 恢复 PromptNode 状态，允许再次发送
+    promptNode._isRunning = false;
     unlisten();
   }
 }

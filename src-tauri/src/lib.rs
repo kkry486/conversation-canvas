@@ -4,8 +4,53 @@ use mcp_client::OpenAiTool;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 use tauri::{Emitter, State};
 use tokio::sync::Mutex;
+
+// ═══════════════════════════════════════════════════
+//  安全：命令黑名单
+// ═══════════════════════════════════════════════════
+
+/// 危险命令黑名单（不区分大小写）
+const DANGEROUS_COMMANDS: &[&str] = &[
+    // 文件系统破坏
+    "rm -rf", "rm -f /", "rmdir /s /q", "del /f /s /q",
+    "format", "format c:", "format d:",
+    // 系统破坏
+    "shutdown", "restart", "bootrec", "bcdedit",
+    "reg delete", "regedit", "reg add",
+    // 磁盘破坏
+    "diskpart", "clean", "convert mbr", "convert gpt",
+    // 权限提升
+    "net user", "net localgroup", "runas",
+    // 网络攻击
+    "curl.*|.*sh", "wget.*|.*sh", "powershell.*invoke",
+    // 危险脚本
+    ":(){ :|:& };:",  // fork bomb
+    "mkfs", "dd if=",
+];
+
+/// 检查命令是否包含危险操作
+fn is_dangerous_command(cmd: &str) -> bool {
+    let cmd_lower = cmd.to_lowercase();
+    DANGEROUS_COMMANDS.iter().any(|dangerous| {
+        if dangerous.contains('*') {
+            // 简单的通配符匹配
+            let parts: Vec<&str> = dangerous.split('*').collect();
+            if parts.len() == 2 {
+                cmd_lower.contains(parts[0]) && cmd_lower.contains(parts[1])
+            } else {
+                cmd_lower.contains(dangerous)
+            }
+        } else {
+            cmd_lower.contains(dangerous)
+        }
+    })
+}
+
+/// 命令执行超时时间（秒）
+const COMMAND_TIMEOUT_SECS: u64 = 30;
 
 // ═══════════════════════════════════════════════════
 //  数据结构
@@ -273,18 +318,30 @@ async fn execute_tool(
                 Some(c) => c,
                 None => return (false, "缺少 command 参数".to_string(), None, None),
             };
-            match Command::new("cmd")
-                .args(["/C", cmd])
-                .current_dir(work_dir)
-                .output()
-            {
-                Ok(output) => {
+
+            // 安全检查：拒绝危险命令
+            if is_dangerous_command(cmd) {
+                return (false, format!("安全拒绝：该命令被标记为危险操作，已被拦截。\n命令内容: {cmd}"), None, None);
+            }
+
+            // 使用 tokio::process::Command 实现超时
+            let output = tokio::time::timeout(
+                Duration::from_secs(COMMAND_TIMEOUT_SECS),
+                tokio::process::Command::new("cmd")
+                    .args(["/C", cmd])
+                    .current_dir(work_dir)
+                    .output()
+            ).await;
+
+            match output {
+                Ok(Ok(output)) => {
                     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
                     let result = [stdout, stderr].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
                     (true, if result.is_empty() { "命令执行成功（无输出）".to_string() } else { result }, None, None)
                 }
-                Err(e) => (false, format!("执行失败: {e}"), None, None),
+                Ok(Err(e)) => (false, format!("执行失败: {e}"), None, None),
+                Err(_) => (false, format!("命令执行超时（{}秒）: {cmd}", COMMAND_TIMEOUT_SECS), None, None),
             }
         }
         "search_in_files" => {
@@ -293,8 +350,24 @@ async fn execute_tool(
                 None => return (false, "缺少 query 参数".to_string(), None, None),
             };
             let search_path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+
+            // 构建搜索路径列表
+            let extensions = ["js", "svelte", "ts", "json", "md"];
+            let search_paths: Vec<String> = extensions.iter()
+                .map(|ext| format!("{}\\*.{}", search_path, ext))
+                .collect();
+
+            // 使用参数化调用，避免命令注入
+            // findstr 的 /C: 参数需要特殊处理，使用文件参数形式更安全
+            let mut cmd_args = vec!["/C", "findstr", "/S", "/N"];
+            let query_arg = format!("/C:{}", query);
+            cmd_args.push(&query_arg);
+            for path in &search_paths {
+                cmd_args.push(path);
+            }
+
             match Command::new("cmd")
-                .args(["/C", &format!("findstr /S /N /C:\"{query}\" {search_path}\\*.js {search_path}\\*.svelte {search_path}\\*.ts {search_path}\\*.json {search_path}\\*.md 2>nul")])
+                .args(&cmd_args)
                 .current_dir(work_dir)
                 .output()
             {

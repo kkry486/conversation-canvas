@@ -1,6 +1,8 @@
 /**
  * 创建可滚动、自动扩展的文本输入 widget
  */
+import { showTextEdit } from '../services/textEditService.js';
+
 export function createScrollableInput(label, value, onChange, opts = {}) {
   const minH = opts.minH || 40;
   const maxH = opts.maxH || 160;
@@ -88,13 +90,18 @@ export function createScrollableInput(label, value, onChange, opts = {}) {
 
     mouse: function (event, pos, node) {
       if (event.type === 'pointerdown') {
-        const v = node.graph ? node.graph.prompt('输入 ' + label, this._text || '') : prompt(label, this._text || '');
-        if (v !== null) {
-          this._text = v;
-          this.value = v;
-          this.autoExpand(node);
-          if (onChange) onChange(v);
-        }
+        // 使用应用风格的模态框替代原生 prompt
+        showTextEdit('输入 ' + label, this._text || '', {
+          placeholder: opts.placeholder || label,
+          multiline: opts.multiline !== false
+        }).then((v) => {
+          if (v !== null) {
+            this._text = v;
+            this.value = v;
+            this.autoExpand(node);
+            if (onChange) onChange(v);
+          }
+        });
         return true;
       }
     },

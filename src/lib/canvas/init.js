@@ -4,6 +4,7 @@
  */
 
 import { registerModelConfigNode } from './ModelConfigNode.js';
+import { showTextEdit } from '../services/textEditService.js';
 import { registerPromptNode } from './PromptNode.js';
 import { registerResponseNode } from './ResponseNode.js';
 import { registerThinkingNode } from './ThinkingNode.js';
@@ -45,6 +46,11 @@ export function initCanvas(canvasElement) {
     }
   }
 
+  // 清除搜索框默认条目和 slot 默认类型，只保留自定义节点
+  LiteGraph.searchbox_extras = {};
+  LiteGraph.slot_types_default_in = [];
+  LiteGraph.slot_types_default_out = [];
+
   // 设置 canvas 尺寸
   const rect = canvasElement.getBoundingClientRect();
   canvasElement.width = rect.width;
@@ -54,8 +60,19 @@ export function initCanvas(canvasElement) {
   const canvas = new LGraphCanvas(canvasElement, graph);
   canvas.resize();
 
+  // 覆盖 LiteGraph 内置 prompt，用应用风格模态框替代原生 prompt()
+  // 这会拦截所有 addWidget('string') 的点击（PromptNode + ModelConfigNode 共 4 处）
+  canvas.prompt = function (title, value, callback, event, multiline) {
+    showTextEdit(title || '编辑', value || '', {
+      placeholder: title || '',
+      multiline: !!multiline
+    }).then((result) => {
+      if (callback) callback(result);
+    });
+  };
+
   // 配置交互
-  canvas.allow_searchbox = false;
+  canvas.allow_searchbox = true;
   canvas.allow_dragnodes = true;
   canvas.allow_interaction = true;
   canvas.render_canvas_border = false;
@@ -77,6 +94,31 @@ export function initCanvas(canvasElement) {
     }
     canvas.processMouseWheel(e);
   }, false);
+
+  // 缩短双击打开搜索的间隔（默认 300ms → 200ms）
+  canvasElement.addEventListener('dblclick', function (e) {
+    canvas.adjustMouseEvent(e);
+    const node = graph.getNodeOnPos(e.canvasX, e.canvasY);
+    if (!node && canvas.allow_searchbox && !canvas.read_only && !canvas.search_box) {
+      canvas.showSearchBox(e);
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, true);
+
+  // 点击搜索框外部时关闭（捕获阶段，先于 LiteGraph 的 stopPropagation）
+  // 关闭后临时禁用搜索框，防止 LiteGraph processMouseDown 重新打开
+  let _searchClosedByClick = false;
+  document.addEventListener('pointerdown', function (e) {
+    if (canvas.search_box) {
+      if (!canvas.search_box.contains(e.target)) {
+        canvas.search_box.close();
+        canvas.allow_searchbox = false;
+        _searchClosedByClick = true;
+        requestAnimationFrame(() => { canvas.allow_searchbox = true; _searchClosedByClick = false; });
+      }
+    }
+  }, true);
 
   // 监听窗口尺寸变化
   window.addEventListener('resize', () => {

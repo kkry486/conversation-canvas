@@ -6,6 +6,7 @@ export function registerPromptNode(LiteGraph) {
     this.addOutput('配置', 'object');
     this._promptText = '';
     this._sent = false;
+    this._isRunning = false;
     this.size = [280, 120];
 
     const self = this;
@@ -15,6 +16,8 @@ export function registerPromptNode(LiteGraph) {
     });
 
     this.addWidget('button', '▸ 发送', null, () => {
+      // Agent 执行中禁止重复发送
+      if (this._isRunning) return;
       if (this.sendCallback) this.sendCallback();
     });
 

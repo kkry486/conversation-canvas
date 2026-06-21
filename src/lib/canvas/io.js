@@ -12,7 +12,7 @@ export async function exportGraph(graphData) {
     if (node._aiResponse) extra._aiResponse = node._aiResponse;
     if (node._responseText) extra._responseText = node._responseText;
     if (node._statusText) extra._statusText = node._statusText;
-    if (node._apiKey) extra._apiKey = node._apiKey;
+    // API Key 不导出到 JSON，防止敏感信息泄露
     if (node._systemPrompt) extra._systemPrompt = node._systemPrompt;
     if (node._selectedPreset) extra._selectedPresetId = node._selectedPreset.id;
     const nodeData = data.nodes.find(n => n.id === node.id);

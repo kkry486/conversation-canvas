@@ -75,7 +75,7 @@
 
       <label class="checkbox">
         <input type="checkbox" bind:checked={remember} />
-        <span>记住我的配置（加密存储到本地）</span>
+        <span>记住我的配置（存储到本地）</span>
       </label>
     </div>
 

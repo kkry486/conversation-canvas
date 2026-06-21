@@ -8,6 +8,8 @@
   import McpManager from '$lib/components/McpManager.svelte';
   import AgentLog from '$lib/components/AgentLog.svelte';
   import GuideDialog from '$lib/components/GuideDialog.svelte';
+  import TextEditModal from '$lib/components/TextEditModal.svelte';
+  import { setUpdateCallback, confirmEdit, cancelEdit, getState } from '$lib/services/textEditService.js';
 
   let canvasEl;
   let graphData = $state(null);
@@ -25,6 +27,13 @@
   let fileTreeRef = $state(null);
   let rightTopRatio = $state(0.4);
   let showGuide = $state(false);
+  let agentRunning = $state(false);
+  let textEditState = $state({ visible: false });
+
+  // 初始化文本编辑服务
+  setUpdateCallback((state) => {
+    textEditState = state;
+  });
 
   function startDrag(panel, e) {
     const startX = e.clientX;
@@ -107,6 +116,28 @@
       showGuide = true;
     }
 
+    // 尝试加载已保存的配置
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const savedConfig = await invoke('load_config');
+      if (savedConfig && savedConfig.remember) {
+        // 应用已保存的配置
+        setConfig({
+          model: savedConfig.model,
+          apiKey: savedConfig.apiKey,
+          baseUrl: savedConfig.baseUrl,
+          systemPrompt: savedConfig.systemPrompt || ''
+        });
+      } else if (!savedConfig) {
+        // 没有保存的配置，显示设置对话框
+        showSetup = true;
+      }
+    } catch (e) {
+      console.error('加载配置失败:', e);
+      // 加载失败也显示设置对话框
+      showSetup = true;
+    }
+
     if (!window.LiteGraph) {
       const script = document.createElement('script');
       script.src = '/litegraph/litegraph.js';
@@ -164,6 +195,7 @@
 
   function bindSend(promptNode) {
     promptNode.sendCallback = async () => {
+      if (agentRunning) return;
       const text = promptNode._promptText.trim();
       if (!text) return;
       promptNode._sent = true;
@@ -173,11 +205,20 @@
         fileTreeRef?.refresh();
         fileTreeRef?.highlight(filePath);
       } : null;
-      const result = await sendFn(graphData, promptNode, config, text, mcpConnected, onFileCreated);
-      if (result && result.text) {
-        const newPrompt = createNextPromptNode(graphData, result.responseNode);
-        nodeCount += 2;
-        bindSend(newPrompt);
+
+      // 禁用发送按钮
+      if (agentMode) agentRunning = true;
+
+      try {
+        const result = await sendFn(graphData, promptNode, config, text, mcpConnected, onFileCreated);
+        if (result && result.text) {
+          const newPrompt = createNextPromptNode(graphData, result.responseNode);
+          nodeCount += 2;
+          bindSend(newPrompt);
+        }
+      } finally {
+        // 恢复发送按钮
+        if (agentMode) agentRunning = false;
       }
     };
   }
@@ -201,8 +242,8 @@
   function focusNode(node) {
     if (!graphData || !node) return;
     const canvas = graphData.canvas;
-    const cw = canvasElement ? canvasElement.width / canvas.ds.scale : 800;
-    const ch = canvasElement ? canvasElement.height / canvas.ds.scale : 600;
+    const cw = canvasEl ? canvasEl.width / canvas.ds.scale : 800;
+    const ch = canvasEl ? canvasEl.height / canvas.ds.scale : 600;
     canvas.ds.offset[0] = -node.pos[0] + cw / 2 - (node.size ? node.size[0] / 2 : 70);
     canvas.ds.offset[1] = -node.pos[1] + ch / 2 - (node.size ? node.size[1] / 2 : 30);
     // 高亮选中
@@ -235,11 +276,6 @@
     }
   }
 
-  // 引用 canvasEl 给搜索用
-  let canvasElement = $state(null);
-  $effect(() => { canvasElement = canvasEl; });
-
-  // 对比分支按钮点击：直接读 canvas.selected_nodes
   function onCompareClick() {
     if (!graphData) return;
     // 每次点击重置状态
@@ -305,6 +341,21 @@
 
 {#if showGuide}
   <GuideDialog onComplete={() => { showGuide = false; localStorage.setItem('canvas-guide-seen', '1'); }} />
+{/if}
+
+{#if showSetup}
+  <SetupDialog onSetup={onSetupComplete} />
+{/if}
+
+{#if textEditState.visible}
+  <TextEditModal
+    title={textEditState.title}
+    value={textEditState.value}
+    placeholder={textEditState.placeholder}
+    multiline={textEditState.multiline}
+    onConfirm={confirmEdit}
+    onCancel={cancelEdit}
+  />
 {/if}
 
 {#if showMcpManager}
